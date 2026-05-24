@@ -17,27 +17,22 @@ MAX_PRICE = 13500
 MIN_ROOMS = 5
 MIN_SQM = 130
 
-# שכונות לחיפוש
 NEIGHBORHOODS = {
-    "כוכב הצפון":              198,
-    "הצפון החדש - צפון":       204,
-    "הצפון הישן - דרום (חן)":  1461,
+    "כוכב הצפון":               198,
+    "הצפון החדש - צפון":        204,
+    "הצפון הישן - דרום (חן)":   1461,
     "הצפון החדש - כיכר המדינה": 1516,
-    "הצפון הישן - צפון":       1483,
+    "הצפון הישן - צפון":        1483,
 }
 
 SEEN_FILE = "seen_listings.json"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml",
-    "Referer": "https://www.yad2.co.il/",
-}
+# רשימת User-Agents לנסות
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+]
 
 
 def load_seen():
@@ -53,17 +48,41 @@ def save_seen(seen):
         json.dump(list(seen), f, ensure_ascii=False)
 
 
-def fetch_page(neighborhood_id):
+def fetch_page(neighborhood_id, ua_index=0):
     url = (
         "https://www.yad2.co.il/realestate/rent/tel-aviv-area"
         f"?area=1&city=5000&neighborhood={neighborhood_id}"
     )
+    headers = {
+        "User-Agent": USER_AGENTS[ua_index % len(USER_AGENTS)],
+        "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Cache-Control": "max-age=0",
+    }
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
+        session = requests.Session()
+        # ביקור ראשוני בדף הבית לקבלת cookies
+        session.get("https://www.yad2.co.il/", headers=headers, timeout=15)
+        resp = session.get(url, headers=headers, timeout=20)
+        print(f"  HTTP {resp.status_code} | {len(resp.text)} chars")
+        
+        # דיאגנוסטיקה
+        if "realestate/item" in resp.text:
+            count = resp.text.count("realestate/item")
+            print(f"  נמצאו {count} אזכורים של מודעות ב-HTML")
+        else:
+            print(f"  ⚠️  אין מודעות ב-HTML — יד2 כנראה חוסמת")
+            print(f"  תחילת תגובה: {resp.text[:200]}")
+        
         return resp.text
     except Exception as e:
-        print(f"  ⚠️  שגיאה בטעינת שכונה {neighborhood_id}: {e}")
+        print(f"  ❌ שגיאה: {e}")
         return None
 
 
@@ -110,30 +129,21 @@ def parse_listings(html, neighborhood_name):
         address = re.split(r"₪|דירה|גג|פנטהאוז|דופלקס", text)[0].strip()[:70]
 
         results.append({
-            "id":           listing_id,
-            "url":          f"https://www.yad2.co.il{href}",
-            "address":      address,
-            "price":        price,
-            "rooms":        rooms,
-            "sqm":          sqm,
-            "floor":        floor,
-            "neighborhood": neighborhood_name,
-            "has_mamad":    has_mamad,
-            "has_parking":  has_parking,
-            "has_balcony":  has_balcony,
-            "has_elevator": has_elevator,
+            "id": listing_id, "url": f"https://www.yad2.co.il{href}",
+            "address": address, "price": price, "rooms": rooms,
+            "sqm": sqm, "floor": floor, "neighborhood": neighborhood_name,
+            "has_mamad": has_mamad, "has_parking": has_parking,
+            "has_balcony": has_balcony, "has_elevator": has_elevator,
         })
 
+    print(f"  פורסרו {len(results)} מודעות עם פרטים מלאים")
     return results
 
 
 def filter_listings(listings):
-    return [
-        l for l in listings
-        if l["price"] <= MAX_PRICE
-        and l["rooms"] >= MIN_ROOMS
-        and l["sqm"] >= MIN_SQM
-    ]
+    filtered = [l for l in listings if l["price"] <= MAX_PRICE and l["rooms"] >= MIN_ROOMS and l["sqm"] >= MIN_SQM]
+    print(f"  אחרי סינון: {len(filtered)} תואמות")
+    return filtered
 
 
 def feature_icon(present):
@@ -142,7 +152,7 @@ def feature_icon(present):
 
 def send_email(new_listings, total_seen):
     if not GMAIL_APP_PASSWORD:
-        print("⚠️  GMAIL_APP_PASSWORD לא מוגדר, דילוג על שליחת מייל")
+        print("⚠️  GMAIL_APP_PASSWORD לא מוגדר")
         return
 
     date_str = datetime.now().strftime("%d/%m/%Y")
@@ -159,11 +169,8 @@ def send_email(new_listings, total_seen):
                 <a href="{l['url']}" style="color:#1a73e8;text-decoration:none;">{l['address']}</a>
             </h3>
             <p style="margin:4px 0;font-size:15px;">
-                📍 <b>{l['neighborhood']}</b> &nbsp;|&nbsp;
-                💰 <b>{l['price']:,} ₪</b> &nbsp;|&nbsp;
-                🛏 <b>{l['rooms']} חדרים</b> &nbsp;|&nbsp;
-                📐 <b>{l['sqm']} מ"ר</b> &nbsp;|&nbsp;
-                🏢 קומה {l['floor']}
+                📍 <b>{l['neighborhood']}</b> | 💰 <b>{l['price']:,} ₪</b> |
+                🛏 <b>{l['rooms']} חדרים</b> | 📐 <b>{l['sqm']} מ"ר</b> | 🏢 קומה {l['floor']}
             </p>
             <p style="margin:6px 0;font-size:14px;color:#555;">
                 {feature_icon(l['has_mamad'])} ממ"ד &nbsp;
@@ -171,31 +178,26 @@ def send_email(new_listings, total_seen):
                 {feature_icon(l['has_balcony'])} מרפסת &nbsp;
                 {feature_icon(l['has_elevator'])} מעלית
             </p>
-            <a href="{l['url']}"
-               style="display:inline-block;margin-top:8px;background:#1a73e8;color:white;
-                      padding:8px 18px;border-radius:6px;text-decoration:none;font-size:14px;">
+            <a href="{l['url']}" style="display:inline-block;margin-top:8px;background:#1a73e8;color:white;
+               padding:8px 18px;border-radius:6px;text-decoration:none;font-size:14px;">
                 לצפייה במודעה →
             </a>
         </div>"""
 
-    html = f"""
-    <html><body dir="rtl" style="font-family:Arial,sans-serif;max-width:700px;margin:auto;padding:20px;">
-        <h2 style="color:#333;">נמצאו {len(new_listings)} דירות חדשות שמתאימות לקריטריונים שלך</h2>
+    html = f"""<html><body dir="rtl" style="font-family:Arial,sans-serif;max-width:700px;margin:auto;padding:20px;">
+        <h2>נמצאו {len(new_listings)} דירות חדשות</h2>
         <p style="color:#666;border-bottom:1px solid #eee;padding-bottom:10px;">
-            <b>קריטריונים:</b> 5+ חדרים &nbsp;|&nbsp; 130+ מ"ר &nbsp;|&nbsp; עד 13,500 ₪ &nbsp;|&nbsp; צפון תל אביב
-        </p>
-        {rows}
+            5+ חדרים | 130+ מ"ר | עד 13,500 ₪ | צפון תל אביב
+        </p>{rows}
         <p style="color:#999;font-size:12px;margin-top:20px;">
-            ❓ = לא מצוין במודעה, כדאי לבדוק &nbsp;|&nbsp; סה"כ דירות במעקב: {total_seen}
-        </p>
-    </body></html>"""
+            ❓ = לא מצוין במודעה, כדאי לבדוק | סה"כ במעקב: {total_seen}
+        </p></body></html>"""
 
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(SENDER_EMAIL, GMAIL_APP_PASSWORD)
         server.send_message(msg)
-
     print(f"✅ מייל נשלח עם {len(new_listings)} דירות")
 
 
@@ -204,18 +206,15 @@ def main():
     seen = load_seen()
     all_new = []
 
-    for name, nid in NEIGHBORHOODS.items():
-        print(f"  📍 {name}...")
-        html     = fetch_page(nid)
+    for i, (name, nid) in enumerate(NEIGHBORHOODS.items()):
+        print(f"\n📍 {name}...")
+        html     = fetch_page(nid, ua_index=i)
         listings = parse_listings(html, name)
         matched  = filter_listings(listings)
         new      = [l for l in matched if l["id"] not in seen]
-
         all_new.extend(new)
         for l in matched:
             seen.add(l["id"])
-
-        print(f"     נמצאו {len(matched)} תואמות, {len(new)} חדשות")
 
     save_seen(seen)
     print(f"\n📊 סה\"כ חדשות: {len(all_new)}")
